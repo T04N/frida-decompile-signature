@@ -29,6 +29,11 @@ Interceptor.attach(Module.getGlobalExportByName("open"), {
 
 if (Java.available) {
     Java.perform(() => {
+        // Helper: remove newlines/whitespace from Base64 for URL safety
+        const sanitizeBase64ForUrl = (s: string): string => {
+            if (!s) return s;
+            return s.replace(/\s+/g, "");
+        };
         send({
             type: "status",
             message: "Application class-loader now available"
@@ -66,13 +71,13 @@ if (Java.available) {
             MessageDigest.getInstance.overload("java.lang.String").implementation = function(algorithm: string) {
                 var result = this.getInstance(algorithm);
                 if (algorithm === "SHA-256") {
-                    send("[SHA256] MessageDigest.getInstance called for SHA-256");
+                    // send("[SHA256] MessageDigest.getInstance called for SHA-256");
                     
                     // Hook digest method
                     result.digest.overload().implementation = function() {
                         var hashBytes = this.digest();
                         var hashBase64 = Base64.encodeToString(hashBytes, 0);
-                        send("[SHA256-HASH] Final SHA-256 hash: " + hashBase64);
+                        // send("[SHA256-HASH] Final SHA-256 hash: " + hashBase64);
                         return hashBytes;
                     };
                 }
@@ -82,7 +87,7 @@ if (Java.available) {
             // Also hook update method to see what data is being hashed
             MessageDigest.update.overload("[B").implementation = function(input: any) {
                 var result = this.update(input);
-                send("[SHA256] MessageDigest.update called with " + input.length + " bytes");
+                // send("[SHA256] MessageDigest.update called with " + input.length + " bytes");
                 return result;
             };
             
@@ -101,7 +106,9 @@ if (Java.available) {
             Cipher.doFinal.overload("[B").implementation = function(input: any) {
                 var result = this.doFinal(input);
                 var resultBase64 = Base64.encodeToString(result, 0);
-                send("[AES-ENCRYPT] Encrypted result (Base64): " + resultBase64);
+                var safeB64 = sanitizeBase64ForUrl(resultBase64);
+                //ket qua o day -> dung
+                send("[AES-ENCRYPT] " +"http://carmin-backend.appspot.com/rs/mo/" + safeB64);
                 return result;
             };
             
@@ -109,7 +116,7 @@ if (Java.available) {
             Cipher.getInstance.overload("java.lang.String").implementation = function(transformation: string) {
                 var result = this.getInstance(transformation);
                 if (transformation.indexOf("AES") !== -1) {
-                    send("[AES-ENCRYPT] Cipher.getInstance called with: " + transformation);
+                    // send("[AES-ENCRYPT] Cipher.getInstance called with: " + transformation);
                 }
                 return result;
             };
@@ -157,58 +164,97 @@ if (Java.available) {
         }
 
         // Robust direct hooks for d.c.a.f.b: f(String,String,String) and r(String) with retry until class loads
+        // try {
+        //     var hookBOnce = function() {
+        //         try {
+        //             var Bcls = Java.use('d.c.a.f.b');
+        //             // Hook static f(String,String,String)
+        //             try {
+        //                 var fOver = Bcls.f.overload('java.lang.String', 'java.lang.String', 'java.lang.String');
+        //                 fOver.implementation = function(str: string, str2: string, str3: string) {
+        //                     try { send('[F-ARGS-DIRECT] str=' + str + ' str2=' + str2 + ' str3=' + str3); } catch (_) {}
+        //                     // For static methods, `this` is the class wrapper; call original via overload
+        //                     return fOver.call(this, str, str2, str3);
+        //                 };
+        //                 send('[OK] Hooked d.c.a.f.b.f(String,String,String)');
+        //             } catch (fe) {
+        //                 send('[WARN] d.c.a.f.b.f overload not ready: ' + fe);
+        //                 throw fe;
+        //             }
+
+        //             // Hook static r(String)
+        //             try {
+        //                 var rOver = Bcls.r.overload('java.lang.String');
+        //                 rOver.implementation = function(seed: string) {
+        //                     try { send('[R-ARG] seed=' + seed); } catch (_) {}
+        //                     return rOver.call(this, seed);
+        //                 };
+        //                 send('[OK] Hooked d.c.a.f.b.r(String)');
+        //             } catch (re) {
+        //                 send('[WARN] d.c.a.f.b.r overload not ready: ' + re);
+        //                 // Do not throw; f() is primary target
+        //             }
+
+        //             return true;
+        //         } catch (e) {
+        //             return false;
+        //         }
+        //     };
+
+        //     if (!hookBOnce()) {
+        //         var tries = 0;
+        //         var maxTries = 10;
+        //         var t = setInterval(function() {
+        //             if (hookBOnce() || ++tries >= maxTries) {
+        //                 clearInterval(t);
+        //                 if (tries >= maxTries) {
+        //                     send('[WARN] Stop retrying hook for d.c.a.f.b after ' + tries + ' attempts');
+        //                 }
+        //             }
+        //         }, 500);
+        //         send('[INFO] Will retry hooking d.c.a.f.b up to ' + maxTries + ' times');
+        //     }
+        // } catch (e) {
+        //     send('[ERROR] Failed to init direct hooks for d.c.a.f.b: ' + e);
+        // }
+
+        // Hook SecretKeySpec constructor to capture AES key bytes
         try {
-            var hookBOnce = function() {
+            var SecretKeySpec = Java.use('javax.crypto.spec.SecretKeySpec');
+            var Base64 = Java.use('android.util.Base64');
+
+            // SecretKeySpec(byte[] key, String algorithm)
+            SecretKeySpec.$init.overload('[B', 'java.lang.String').implementation = function(keyBytes: any, algorithm: string) {
                 try {
-                    var Bcls = Java.use('d.c.a.f.b');
-                    // Hook static f(String,String,String)
-                    try {
-                        var fOver = Bcls.f.overload('java.lang.String', 'java.lang.String', 'java.lang.String');
-                        fOver.implementation = function(str: string, str2: string, str3: string) {
-                            try { send('[F-ARGS-DIRECT] str=' + str + ' str2=' + str2 + ' str3=' + str3); } catch (_) {}
-                            // For static methods, `this` is the class wrapper; call original via overload
-                            return fOver.call(this, str, str2, str3);
-                        };
-                        send('[OK] Hooked d.c.a.f.b.f(String,String,String)');
-                    } catch (fe) {
-                        send('[WARN] d.c.a.f.b.f overload not ready: ' + fe);
-                        throw fe;
+                    if (algorithm && algorithm.toUpperCase() === 'AES') {
+                        var b64 = Base64.encodeToString(keyBytes, 0);
+                        var hex = Array.prototype.map.call(keyBytes, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
+                        send('[AES-KEY] algo=' + algorithm + ' len=' + keyBytes.length + ' key.b64=' + b64 + ' key.hex=' + hex);
+                   
+                   //KEY 
+                   //{'type': 'send', 'payload': '[AES-KEY] algo=AES len=16 key.b64=SjFZWGhmdklJVDlGbWdrZQ==\n key.hex=4A31595868667649495439466D676B65'} data: None
                     }
-
-                    // Hook static r(String)
-                    try {
-                        var rOver = Bcls.r.overload('java.lang.String');
-                        rOver.implementation = function(seed: string) {
-                            try { send('[R-ARG] seed=' + seed); } catch (_) {}
-                            return rOver.call(this, seed);
-                        };
-                        send('[OK] Hooked d.c.a.f.b.r(String)');
-                    } catch (re) {
-                        send('[WARN] d.c.a.f.b.r overload not ready: ' + re);
-                        // Do not throw; f() is primary target
-                    }
-
-                    return true;
-                } catch (e) {
-                    return false;
-                }
+                } catch (_) {}
+                return this.$init(keyBytes, algorithm);
             };
 
-            if (!hookBOnce()) {
-                var tries = 0;
-                var maxTries = 10;
-                var t = setInterval(function() {
-                    if (hookBOnce() || ++tries >= maxTries) {
-                        clearInterval(t);
-                        if (tries >= maxTries) {
-                            send('[WARN] Stop retrying hook for d.c.a.f.b after ' + tries + ' attempts');
-                        }
+            // SecretKeySpec(byte[] key, int offset, int len, String algorithm)
+            SecretKeySpec.$init.overload('[B', 'int', 'int', 'java.lang.String').implementation = function(keyBytes2: any, offset: number, len: number, algorithm2: string) {
+                try {
+                    if (algorithm2 && algorithm2.toUpperCase() === 'AES') {
+                        // Extract slice manually for logging
+                        var slice = Java.array('byte', keyBytes2).slice(offset, offset + len);
+                        var b64s = Base64.encodeToString(slice, 0);
+                        var hexs = Array.prototype.map.call(slice, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
+                        send('[AES-KEY] algo=' + algorithm2 + ' len=' + len + ' key.b64=' + b64s + ' key.hex=' + hexs);
                     }
-                }, 500);
-                send('[INFO] Will retry hooking d.c.a.f.b up to ' + maxTries + ' times');
-            }
+                } catch (_) {}
+                return this.$init(keyBytes2, offset, len, algorithm2);
+            };
+
+            send('[OK] Hooked SecretKeySpec constructors for AES key capture');
         } catch (e) {
-            send('[ERROR] Failed to init direct hooks for d.c.a.f.b: ' + e);
+            send('[ERROR] Failed to hook SecretKeySpec: ' + e);
         }
 
         // Direct hook for static b.f(String,String,String) discovered in decompiled code (d.c.a.f.b)
