@@ -22,3 +22,4 @@ type-checking feedback.
 # frida-decompile
 # frida-decompile
 # frida-decompile-signature
+# frida-decompile-signature
