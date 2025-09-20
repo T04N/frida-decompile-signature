@@ -55,9 +55,9 @@ if (Java.available) {
                     var hex = Array.prototype.map.call(b, function(x){ 
                         return ('0'+(x&0xff).toString(16)).slice(-2)
                     }).join('').toUpperCase();
-                    send("[SIGN-BYTES-TESTING] base64=" + b64 + " hex=" + hex);
+                    // send("[SIGN-BYTES] base64=" + b64 + " hex=" + hex);
                 } catch(e){
-                    // send("[SIGN-BYTES-ERR] " + e);
+                    send("[SIGN-BYTES-ERR] " + e);
                 }
                 return b;
             };
@@ -100,7 +100,56 @@ if (Java.available) {
             send("[ERROR] Failed to hook MessageDigest: " + e);
         }
 
-       
+        // Hook Cipher.doFinal() to capture AES encryption result instead of method f()
+        // This approach is safer and avoids potential crashes
+        try {
+            var Cipher = Java.use("javax.crypto.Cipher");
+            var Base64 = Java.use("android.util.Base64");
+            
+            // Hook Cipher.doFinal to capture encrypted data
+            Cipher.doFinal.overload("[B").implementation = function(input: any) {
+                var result = this.doFinal(input);
+                var resultBase64 = Base64.encodeToString(result, 0);
+                var safeB64 = sanitizeBase64ForUrl(resultBase64);
+                if (safeB64.indexOf('/') !== -1) {
+                    safeB64 = safeB64.replace(/\//g, "_");
+                }
+                //ket qua o day -> dung
+                send("[AES-ENCRYPT] " +"http://carmin-backend.appspot.com/rs/mo/" + safeB64);
+                return result;
+            };
+            
+            // Also hook Cipher.getInstance to see what algorithm is being used
+            Cipher.getInstance.overload("java.lang.String").implementation = function(transformation: string) {
+                var result = this.getInstance(transformation);
+                if (transformation.indexOf("AES") !== -1) {
+                    // send("[AES-ENCRYPT] Cipher.getInstance called with: " + transformation);
+                }
+                return result;
+            };
+
+            // Hook Cipher.init(int, Key) to capture the exact AES key used at runtime
+            try {
+                var SecretKeySpecCls = Java.use('javax.crypto.spec.SecretKeySpec');
+                Cipher.init.overload('int', 'java.security.Key').implementation = function(mode: number, key: any) {
+                    try {
+                        // 1 = ENCRYPT_MODE
+                        if (mode === 1 && key) {
+                            var ks = Java.cast(key, SecretKeySpecCls);
+                            var kbytes = ks.getEncoded();
+                            var kb64 = Base64.encodeToString(kbytes, 0);
+                            var khex = Array.prototype.map.call(kbytes, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
+                            send('[AES-KEY-RUNTIME] len=' + kbytes.length + ' key.b64=' + kb64 + ' key.hex=' + khex);
+                        }
+                    } catch (_) {}
+                    return this.init(mode, key);
+                };
+            } catch (_) {}
+            
+            send("[OK] Hooked Cipher.doFinal() for AES encryption capture");
+        } catch (e) {
+            send("[ERROR] Failed to hook Cipher: " + e);
+        }
 
         // Reflection-based lightweight hook to capture any static f(String,String,String) args (no class filter)
         try {
@@ -155,6 +204,63 @@ if (Java.available) {
         } catch (e) {
             send('[ERROR] Failed to hook Method.invoke: ' + e);
         }
+
+        // Robust direct hooks for d.c.a.f.b: f(String,String,String) and r(String) with retry until class loads
+        // try {
+        //     var hookBOnce = function() {
+        //         try {
+        //             var Bcls = Java.use('d.c.a.f.b');
+        //             // Hook static f(String,String,String)
+        //             try {
+        //                 var fOver = Bcls.f.overload('java.lang.String', 'java.lang.String', 'java.lang.String');
+        //                 fOver.implementation = function(str: string, str2: string, str3: string) {
+        //                     try { send('[F-ARGS-DIRECT] str=' + str + ' str2=' + str2 + ' str3=' + str3); } catch (_) {}
+        //                     // For static methods, `this` is the class wrapper; call original via overload
+        //                     return fOver.call(this, str, str2, str3);
+        //                 };
+        //                 send('[OK] Hooked d.c.a.f.b.f(String,String,String)');
+        //             } catch (fe) {
+        //                 send('[WARN] d.c.a.f.b.f overload not ready: ' + fe);
+        //                 throw fe;
+        //             }
+
+        //             // Hook static r(String)
+        //             try {
+        //                 var rOver = Bcls.r.overload('java.lang.String');
+        //                 rOver.implementation = function(seed: string) {
+        //                     try { send('[R-ARG] seed=' + seed); } catch (_) {}
+        //                     return rOver.call(this, seed);
+        //                 };
+        //                 send('[OK] Hooked d.c.a.f.b.r(String)');
+        //             } catch (re) {
+        //                 send('[WARN] d.c.a.f.b.r overload not ready: ' + re);
+        //                 // Do not throw; f() is primary target
+        //             }
+
+        //             return true;
+        //         } catch (e) {
+        //             return false;
+        //         }
+        //     };
+
+        //     if (!hookBOnce()) {
+        //         var tries = 0;
+        //         var maxTries = 10;
+        //         var t = setInterval(function() {
+        //             if (hookBOnce() || ++tries >= maxTries) {
+        //                 clearInterval(t);
+        //                 if (tries >= maxTries) {
+        //                     send('[WARN] Stop retrying hook for d.c.a.f.b after ' + tries + ' attempts');
+        //                 }
+        //             }
+        //         }, 500);
+        //         send('[INFO] Will retry hooking d.c.a.f.b up to ' + maxTries + ' times');
+        //     }
+        // } catch (e) {
+        //     send('[ERROR] Failed to init direct hooks for d.c.a.f.b: ' + e);
+        // }
+
+        // Hook SecretKeySpec constructor to capture AES key bytes
         try {
             var SecretKeySpec = Java.use('javax.crypto.spec.SecretKeySpec');
             var Base64 = Java.use('android.util.Base64');
@@ -166,167 +272,169 @@ if (Java.available) {
                         var b64 = Base64.encodeToString(keyBytes, 0);
                         var hex = Array.prototype.map.call(keyBytes, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
                         send('[AES-KEY] algo=' + algorithm + ' len=' + keyBytes.length + ' key.b64=' + b64 + ' key.hex=' + hex);
+                   
+                   //KEY 
+                   //{'type': 'send', 'payload': '[AES-KEY] algo=AES len=16 key.b64=SjFZWGhmdklJVDlGbWdrZQ==\n key.hex=4A31595868667649495439466D676B65'} data: None
                     }
                 } catch (_) {}
                 return this.$init(keyBytes, algorithm);
             };
 
-
-            SecretKeySpec.$init.overload('[B', 'int', 'int', 'java.lang.String').implementation = function(keyBytes2: any, offset: number, len: number, algorithm2: string) {
-                try {
-                    if (algorithm2 && algorithm2.toUpperCase() === 'AES') {
-                        // Extract slice manually for logging
-                        var slice = Java.array('byte', keyBytes2).slice(offset, offset + len);
-                        var b64s = Base64.encodeToString(slice, 0);
-                        var hexs = Array.prototype.map.call(slice, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
-                        send('[AES-KEY] algo=' + algorithm2 + ' len=' + len + ' key.b64=' + b64s + ' key.hex=' + hexs);
-                    }
-                } catch (_) {}
-                return this.$init(keyBytes2, offset, len, algorithm2);
-            };
+            // // SecretKeySpec(byte[] key, int offset, int len, String algorithm)
+            // SecretKeySpec.$init.overload('[B', 'int', 'int', 'java.lang.String').implementation = function(keyBytes2: any, offset: number, len: number, algorithm2: string) {
+            //     try {
+            //         if (algorithm2 && algorithm2.toUpperCase() === 'AES') {
+            //             // Extract slice manually for logging
+            //             var slice = Java.array('byte', keyBytes2).slice(offset, offset + len);
+            //             var b64s = Base64.encodeToString(slice, 0);
+            //             var hexs = Array.prototype.map.call(slice, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
+            //             send('[AES-KEY] algo=' + algorithm2 + ' len=' + len + ' key.b64=' + b64s + ' key.hex=' + hexs);
+            //         }
+            //     } catch (_) {}
+            //     return this.$init(keyBytes2, offset, len, algorithm2);
+            // };
 
             send('[OK] Hooked SecretKeySpec constructors for AES key capture');
         } catch (e) {
             send('[ERROR] Failed to hook SecretKeySpec: ' + e);
         }
 
-        // Hook Cipher.init to capture the EXACT key used at runtime
+        // Direct hook for static b.f(String,String,String) discovered in decompiled code (d.c.a.f.b)
         try {
-            var Cipher = Java.use("javax.crypto.Cipher");
-            var SecretKeySpecCls = Java.use('javax.crypto.spec.SecretKeySpec');
-            var Base64 = Java.use("android.util.Base64");
-            
-            Cipher.init.overload('int', 'java.security.Key').implementation = function(mode: number, key: any) {
-                try {
-                
-                    if (mode === 1 && key) {
-                        var ks = Java.cast(key, SecretKeySpecCls);
-                        var kbytes = ks.getEncoded();
-                        var kb64 = Base64.encodeToString(kbytes, 0);
-                        var khex = Array.prototype.map.call(kbytes, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
-                        send('[AES-KEY-RUNTIME] len=' + kbytes.length + ' key.b64=' + kb64 + ' key.hex=' + khex);
-                    }
-                } catch (_) {}
-                return this.init(mode, key);
+            var B = Java.use('d.c.a.f.b');
+            var f3 = B.f.overload('java.lang.String', 'java.lang.String', 'java.lang.String');
+            f3.implementation = function(str: string, str2: string, str3: string) {
+                try { send('[F-ARGS-DIRECT] str=' + str + ' str2=' + str2 + ' str3=' + str3); } catch (_) {}
+                return f3.call(B, str, str2, str3);
             };
-            
-            send('[OK] Hooked Cipher.init for runtime key capture');
+            send('[OK] Hooked d.c.a.f.b.f(String,String,String)');
+            // Also hook r(String) to capture seed and send EXACT key assigned to f9750d
+            try {
+                var r1 = B.r.overload('java.lang.String');
+                r1.implementation = function(seed: string) {
+                    try { send('[R-ARG] seed=' + seed); } catch (_) {}
+                    var ret = r1.call(B, seed);
+                    try {
+                        var SecretKeySpecCls = Java.use('javax.crypto.spec.SecretKeySpec');
+                        var Base64 = Java.use('android.util.Base64');
+                        var keyObj = B.f9750d.value;
+                        if (keyObj) {
+                            var keySpec = Java.cast(keyObj, SecretKeySpecCls);
+                            var keyBytes = keySpec.getEncoded();
+                            var b64 = Base64.encodeToString(keyBytes, 0);
+                            var hex = Array.prototype.map.call(keyBytes, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
+                            send('[AES-KEY-EXACT] len=' + keyBytes.length + ' key.b64=' + b64 + ' key.hex=' + hex);
+                        } else {
+                            send('[AES-KEY-EXACT] f9750d is null');
+                        }
+                    } catch (ke) {
+                        send('[AES-KEY-EXACT-ERR] ' + ke);
+                    }
+                    return ret;
+                };
+                send('[OK] Hooked d.c.a.f.b.r(String) for EXACT key capture');
+            } catch (re) {
+                send('[WARN] Failed initial hook d.c.a.f.b.r(String): ' + re);
+            }
         } catch (e) {
-            send('[ERROR] Failed to hook Cipher.init: ' + e);
+            send('[WARN] d.c.a.f.b.f not available yet, will retry shortly: ' + e);
+            setTimeout(function() {
+                try {
+                    var B2 = Java.use('d.c.a.f.b');
+                    var f32 = B2.f.overload('java.lang.String', 'java.lang.String', 'java.lang.String');
+                    f32.implementation = function(str: string, str2: string, str3: string) {
+                        try { send('[F-ARGS-DIRECT] str=' + str + ' str2=' + str2 + ' str3=' + str3); } catch (_) {}
+                        return f32.call(B2, str, str2, str3);
+                    };
+                    send('[OK] Hooked d.c.a.f.b.f(String,String,String) on retry');
+                // Retry hook r(String) too (with exact key capture)
+                try {
+                    var r12 = B2.r.overload('java.lang.String');
+                    r12.implementation = function(seed: string) {
+                        try { send('[R-ARG] seed=' + seed); } catch (_) {}
+                        var ret2 = r12.call(B2, seed);
+                        try {
+                            var SecretKeySpecCls2 = Java.use('javax.crypto.spec.SecretKeySpec');
+                            var Base64_2 = Java.use('android.util.Base64');
+                            var keyObj2 = B2.f9750d.value;
+                            if (keyObj2) {
+                                var keySpec2 = Java.cast(keyObj2, SecretKeySpecCls2);
+                                var keyBytes2 = keySpec2.getEncoded();
+                                var b64_2 = Base64_2.encodeToString(keyBytes2, 0);
+                                var hex_2 = Array.prototype.map.call(keyBytes2, function(x){ return ('0'+(x & 0xff).toString(16)).slice(-2); }).join('').toUpperCase();
+                                send('[AES-KEY-EXACT] len=' + keyBytes2.length + ' key.b64=' + b64_2 + ' key.hex=' + hex_2);
+                            } else {
+                                send('[AES-KEY-EXACT] f9750d is null');
+                            }
+                        } catch (ke2) {
+                            send('[AES-KEY-EXACT-ERR] ' + ke2);
+                        }
+                        return ret2;
+                    };
+                    send('[OK] Hooked d.c.a.f.b.r(String) on retry for EXACT key capture');
+                } catch (re2) {
+                    send('[ERROR] Failed to hook d.c.a.f.b.r(String) after retry: ' + re2);
+                }
+                } catch (e2) {
+                    send('[ERROR] Failed to hook d.c.a.f.b.f after retry: ' + e2);
+                }
+            }, 1500);
         }
 
+        // Enumerate and hook ANY static f(String,String,String):String across all classes
+        // try {
+        //     var hookedFMap: any = (globalThis as any).__hookedFMap || {};
+        //     (globalThis as any).__hookedFMap = hookedFMap;
+
+        //     var hookAllF = function() {
+        //         try {
+        //             var classes = Java.enumerateLoadedClassesSync();
+        //             var ModifierAll = Java.use('java.lang.reflect.Modifier');
+        //             for (var i = 0; i < classes.length; i++) {
+        //                 var cn = classes[i];
+        //                 if (hookedFMap[cn]) continue;
+        //                 try {
+        //                     var ClsAny: any = Java.use(cn);
+        //                     if (!ClsAny || !ClsAny.f || !ClsAny.f.overload) continue;
+        //                     var overF = null;
+        //                     try {
+        //                         overF = ClsAny.f.overload('java.lang.String','java.lang.String','java.lang.String');
+        //                     } catch (_) { continue; }
+        //                     if (!overF) continue;
+
+        //                     // Verify via reflection: static and return String
+        //                     var methods = ClsAny.class.getDeclaredMethods();
+        //                     var ok = false;
+        //                     for (var k = 0; k < methods.length; k++) {
+        //                         var m = methods[k];
+        //                         if (m.getName() !== 'f') continue;
+        //                         var p = m.getParameterTypes();
+        //                         var r = m.getReturnType();
+        //                         if (p.length === 3 && p[0].getName()==='java.lang.String' && p[1].getName()==='java.lang.String' && p[2].getName()==='java.lang.String' && r.getName()==='java.lang.String' && ModifierAll.isStatic(m.getModifiers())) {
+        //                             ok = true; break;
+        //                         }
+        //                     }
+        //                     if (!ok) continue;
+
+        //                     (function(cnLocal: string, ClsLocal: any, overLocal: any){
+        //                         overLocal.implementation = function(s0: string, s1: string, s2: string) {
+        //                             try { send('[F-ARGS-ENUM] class=' + cnLocal + ' str=' + s0 + ' str2=' + s1 + ' str3=' + s2); } catch (_) {}
+        //                             return overLocal.call(ClsLocal, s0, s1, s2);
+        //                         };
+        //                     })(cn, ClsAny, overF);
+
+        //                     hookedFMap[cn] = true;
+        //                     // send('[OK] Hooked f(String,String,String) on ' + cn);
+        //                 } catch (_) {}
+        //             }
+        //         } catch (_) {}
+        //     };
+
+        //     hookAllF();
+        //     setInterval(hookAllF, 2000);
+        // } catch (e) {}
+
      
-    
-        try {
-            var hookedFMap: any = (globalThis as any).__hookedFMap || {};
-            (globalThis as any).__hookedFMap = hookedFMap;
-
-            var hookAllF = function() {
-                try {
-                    var classes = Java.enumerateLoadedClassesSync();
-                    var ModifierAll = Java.use('java.lang.reflect.Modifier');
-                    for (var i = 0; i < classes.length; i++) {
-                        var cn = classes[i];
-                        if (hookedFMap[cn]) continue;
-                        try {
-                            var ClsAny: any = Java.use(cn);
-                            if (!ClsAny || !ClsAny.f || !ClsAny.f.overload) continue;
-                            var overF = null;
-                            try {
-                                overF = ClsAny.f.overload('java.lang.String','java.lang.String','java.lang.String');
-                            } catch (_) { continue; }
-                            if (!overF) continue;
-
-                            // Verify via reflection: static and return String
-                            var methods = ClsAny.class.getDeclaredMethods();
-                            var ok = false;
-                            for (var k = 0; k < methods.length; k++) {
-                                var m = methods[k];
-                                if (m.getName() !== 'f') continue;
-                                var p = m.getParameterTypes();
-                                var r = m.getReturnType();
-                                if (p.length === 3 && p[0].getName()==='java.lang.String' && p[1].getName()==='java.lang.String' && p[2].getName()==='java.lang.String' && r.getName()==='java.lang.String' && ModifierAll.isStatic(m.getModifiers())) {
-                                    ok = true; break;
-                                }
-                            }
-                            if (!ok) continue;
-
-                            (function(cnLocal: string, ClsLocal: any, overLocal: any){
-                                overLocal.implementation = function(s0: string, s1: string, s2: string) {
-                                    try { send('[F-ARGS-ENUM] class=' + cnLocal + ' str=' + s0 + ' str2=' + s1 + ' str3=' + s2); } catch (_) {}
-                                    return overLocal.call(ClsLocal, s0, s1, s2);
-                                };
-                            })(cn, ClsAny, overF);
-
-                            hookedFMap[cn] = true;
-                            // send('[OK] Hooked f(String,String,String) on ' + cn);
-                        } catch (_) {}
-                    }
-                } catch (_) {}
-            };
-
-            hookAllF();
-            setInterval(hookAllF, 2000);
-        } catch (e) {}
-
-        // Enumerate and hook any static c(Context,String):String to capture str
-        try {
-            var hookedCMap: any = (globalThis as any).__hookedCMap || {};
-            (globalThis as any).__hookedCMap = hookedCMap;
-
-            var hookAllC = function() {
-                try {
-                    var classes = Java.enumerateLoadedClassesSync();
-                    for (var i = 0; i < classes.length; i++) {
-                        var cn = classes[i];
-                        if (hookedCMap[cn]) continue;
-                        try {
-                            var Cls: any = Java.use(cn);
-                            if (!Cls || !Cls.c || !Cls.c.overload) continue;
-                            var overC: any = null;
-                            try {
-                                overC = Cls.c.overload('android.content.Context', 'java.lang.String');
-                            } catch (_) {
-                                continue;
-                            }
-                            if (!overC) continue;
-
-                            // Verify static via reflection
-                            var methods = Cls.class.getDeclaredMethods();
-                            var Modifier = Java.use('java.lang.reflect.Modifier');
-                            var isStaticMatch = false;
-                            for (var k = 0; k < methods.length; k++) {
-                                var m = methods[k];
-                                if (m.getName() === 'c') {
-                                    var p = m.getParameterTypes();
-                                    var r = m.getReturnType();
-                                    if (p.length === 2 && p[0].getName() === 'android.content.Context' && p[1].getName() === 'java.lang.String' && r.getName() === 'java.lang.String') {
-                                        if (Modifier.isStatic(m.getModifiers())) {
-                                            isStaticMatch = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if (!isStaticMatch) continue;
-
-                            overC.implementation = function(ctx: any, s: string) {
-                                try { send('[C-ARGS] class=' + cn + ' str=' + s); } catch (_) {}
-                                return overC.call(Cls, ctx, s);
-                            };
-                            hookedCMap[cn] = true;
-                            // send('[OK] Hooked c(Context,String) on ' + cn);
-                        } catch (_) {}
-                    }
-                } catch (err) {
-                    // ignore
-                }
-            };
-
-            hookAllC();
-            setInterval(hookAllC, 2000);
-        } catch (e) {}
-
         // Hook static method r(String) to capture input secret seed
         // try {
         //     // Try likely classes first, then fall back to enumerate

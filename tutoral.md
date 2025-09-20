@@ -8,3 +8,5 @@ adb shell ps | grep com.min.car
 
 spawn
 frida -U -f com.min.car -l \_agent.js
+
+Chạy watcher để tự rebuild
